@@ -20,11 +20,13 @@ def chat_view(request):
     return render(request, "assistant/chat.html")
 
 
-# Stopwords to drop — English + Arabic (so questions in either language work)
+# ------------------------------------------------------------------ retrieval
+
 STOPWORDS = {
     "what", "is", "the", "a", "an", "please", "tell", "me", "about",
     "give", "show", "for", "of", "to", "in", "on", "and", "with", "?",
     "who", "when", "where", "why", "how", "are", "was", "were", "do", "does",
+    "can", "you", "create", "my", "last", "an", "professional",
     "ما", "هو", "هي", "من", "عن", "في", "على", "الى", "إلى", "مع", "و",
     "ايش", "أيش", "وش", "كيف", "متى", "وين", "أين", "ليش", "لماذا", "هل",
     "اعطني", "أعطني", "اعرض", "وضح", "قل", "لي", "بخصوص", "ماهو", "ماهي",
@@ -33,10 +35,8 @@ STOPWORDS = {
 
 def retrieve_chunks(query: str, k: int = 5):
     qtext = (query or "").lower()
-    # supports Arabic letters (؀-ۿ) plus English and digits
     words = re.findall(r"[\w؀-ۿ]+", qtext, flags=re.UNICODE)
     keywords = [w for w in words if w not in STOPWORDS]
-
     if not keywords:
         keywords = [qtext.strip()] if qtext.strip() else []
 
@@ -47,11 +47,11 @@ def retrieve_chunks(query: str, k: int = 5):
             | Q(document__title__icontains=kw)
             | Q(document__content__icontains=kw)
         )
+    # broad fallbacks so generic requests (MOM, email, summary) still match
+    if not q_obj:
+        q_obj = Q(text__icontains="DECISION")
+    q_obj |= Q(text__icontains="DECISION:")
 
-    if "decision" in keywords or "قرار" in keywords or "قرارات" in keywords:
-        q_obj |= Q(text__icontains="DECISION:") | Q(document__content__icontains="DECISION:")
-
-    # Order by recency: newest first
     qs = (
         KnowledgeChunk.objects.select_related("document")
         .filter(q_obj)
@@ -69,34 +69,147 @@ def retrieve_chunks(query: str, k: int = 5):
             "date": created.strftime("%Y-%m-%d") if created else None,
             "days_ago": (timezone.now() - created).days if created else None,
             "snippet": ch.text[:650],
-            "_context": ch.text[:900],  # longer text for the LLM only (not shown)
+            "full": ch.text,            # untruncated, used by parser + LLM
         })
     return results
 
 
+# ------------------------------------------------------- parse structured data
+
+_SECTION_RE = re.compile(
+    r"PROBLEM:\s*(?P<problem>.*?)\s*"
+    r"OPTIONS:\s*(?P<options>.*?)\s*"
+    r"DECISION:\s*(?P<decision>.*?)\s*"
+    r"JUSTIFICATION:\s*(?P<justification>.*?)\s*"
+    r"CONFIDENCE:\s*(?P<confidence>.*?)\s*"
+    r"TASKS:\s*(?P<tasks>.*)",
+    re.DOTALL,
+)
+
+
+def _parse_seed(text):
+    m = _SECTION_RE.search(text or "")
+    if not m:
+        return None
+    d = {kk: (vv or "").strip() for kk, vv in m.groupdict().items()}
+    return d
+
+
+def _clean(v):
+    v = (v or "").strip()
+    return v if v and v.lower() != "(empty)" else "-"
+
+
+def _fmt_tasks(tasks):
+    t = (tasks or "").strip()
+    return t if t and t != "- (none)" else "- (none recorded)"
+
+
+# ------------------------------------------------------- compose (no-LLM path)
+
+def _compose_local(question, sources):
+    q = (question or "").lower()
+    parsed = []
+    for s in sources:
+        p = _parse_seed(s.get("full", ""))
+        if p:
+            p["_date"] = s.get("date")
+            p["_id"] = s.get("meeting_id")
+            p["_i"] = len(parsed) + 1
+            parsed.append(p)
+
+    # Not structured seed knowledge — just show readable snippets
+    if not parsed:
+        out = ["Here is the relevant information from the knowledge base:\n"]
+        for i, s in enumerate(sources, start=1):
+            out.append(f"— Source [{i}] —")
+            out.append(s.get("snippet", "").strip())
+            out.append("")
+        return "\n".join(out).strip()
+
+    # ----- Minutes of Meeting
+    if any(w in q for w in ["mom", "minute", "محضر"]):
+        p = parsed[0]
+        return (
+            "**Minutes of Meeting (MOM)**\n"
+            f"Date: {p.get('_date') or '-'}\n"
+            f"Meeting ID: {p.get('_id') or '-'}\n\n"
+            "**1. Problem / Context**\n" + _clean(p.get("problem")) + "\n\n"
+            "**2. Options Considered**\n" + _clean(p.get("options")) + "\n\n"
+            "**3. Decision**\n" + _clean(p.get("decision")) + "\n\n"
+            "**4. Justification**\n" + _clean(p.get("justification")) + "\n\n"
+            "**5. Action Items**\n" + _fmt_tasks(p.get("tasks"))
+        )
+
+    # ----- Professional email
+    if any(w in q for w in ["email", "mail", "ايميل", "إيميل", "بريد", "رسالة"]):
+        p = parsed[0]
+        return (
+            "Subject: Follow-up on Recent Meeting Decision\n\n"
+            "Dear Team,\n\n"
+            "Following our recent meeting, here is a summary of the outcome and "
+            "the next steps.\n\n"
+            "Context: " + _clean(p.get("problem")) + "\n\n"
+            "Decision: " + _clean(p.get("decision")) + "\n\n"
+            "Rationale: " + _clean(p.get("justification")) + "\n\n"
+            "Action items:\n" + _fmt_tasks(p.get("tasks")) + "\n\n"
+            "Please review and share any blockers.\n\n"
+            "Best regards,\nWARF"
+        )
+
+    # ----- Tasks / action items
+    if any(w in q for w in ["task", "action", "مهام", "مهمة", "اكشن"]):
+        out = ["**Action items across the matched meetings:**\n"]
+        found = False
+        for p in parsed:
+            t = (p.get("tasks") or "").strip()
+            if t and t != "- (none)":
+                found = True
+                out.append(f"From meeting {p.get('_date') or ''} [source {p['_i']}]:")
+                out.append(t)
+                out.append("")
+        if not found:
+            out.append("No action items were recorded in the matched meetings.")
+        return "\n".join(out).strip()
+
+    # ----- Default: summary of decisions
+    out = ["**Summary of key decisions across the matched meetings:**\n"]
+    n = 0
+    for p in parsed:
+        dec = _clean(p.get("decision"))
+        if dec == "-":
+            continue
+        n += 1
+        date = f" ({p['_date']})" if p.get("_date") else ""
+        out.append(f"{n}. {dec}{date}  [source {p['_i']}]")
+    if n == 0:
+        out.append("No explicit decisions were recorded in the matched meetings.")
+        for p in parsed:
+            out.append(f"- Problem [source {p['_i']}]: {_clean(p.get('problem'))[:200]}")
+    return "\n".join(out).strip()
+
+
+# ------------------------------------------------------------------- LLM setup
+
 def _build_context(sources):
-    """Build the numbered source block passed to the model."""
     lines = []
     for i, s in enumerate(sources, start=1):
         meta = f"[{i}] {s['title']} — ({s['doc_type']})"
         if s.get("date"):
             meta += f" | date: {s['date']}"
-        if s.get("meeting_id"):
-            meta += f" | meeting: {s['meeting_id']}"
-        lines.append(meta + "\n" + s["_context"])
+        lines.append(meta + "\n" + s["full"])
     return "\n\n".join(lines)
 
 
 SYSTEM_PROMPT = (
-    "You are the WARF assistant. Answer ONLY using the sources provided below.\n"
-    "- Do not invent any information that is not in the sources. If the sources "
-    "are insufficient, say so clearly.\n"
-    "- Answer in English (unless the user clearly asks in another language, then "
-    "match their language).\n"
-    "- Cite the source number in brackets like [1] after each fact you use.\n"
-    "- The sources are ordered newest to oldest. If information conflicts, prefer "
-    "the most recent source and mention its date.\n"
-    "- Be concise and direct."
+    "You are the WARF assistant for meeting knowledge. Use ONLY the sources "
+    "provided. If asked to write a MOM (minutes of meeting), an email, a summary, "
+    "or a task list, produce a clean, well-structured, professional document based "
+    "on the sources.\n"
+    "- Do not invent facts not in the sources. If insufficient, say so.\n"
+    "- Answer in the language of the user's question (English or Arabic).\n"
+    "- Cite the source number like [1] where relevant.\n"
+    "- Prefer the most recent source when information conflicts."
 )
 
 
@@ -112,38 +225,30 @@ def ask_api(request):
     if not sources:
         return JsonResponse({
             "ok": True,
-            "answer": "I couldn't find a clear match in the current knowledge base. "
-                      "Try different keywords (e.g., decision, problem, tasks) or "
-                      "rephrase your question.",
+            "answer": "I couldn't find a clear match in the current knowledge "
+                      "base. Try different keywords (e.g., decision, problem, "
+                      "tasks) or rephrase your question.",
             "sources": [],
         })
 
     context = _build_context(sources)
-    user_prompt = f"Sources:\n\n{context}\n\n---\nUser question: {question}"
+    user_prompt = f"Sources:\n\n{context}\n\n---\nUser request: {question}"
 
     try:
         answer = bedrock_chat(
             system_prompt=SYSTEM_PROMPT,
             user_text=user_prompt,
-            temperature=0.2,
-            max_tokens=700,
+            temperature=0.3,
+            max_tokens=900,
         ).strip()
     except Exception as e:
-        # Bedrock unreachable — log the real reason, then show the actual
-        # content (PROBLEM / DECISION / TASKS ...) from each source so the
-        # answer is still readable without the LLM.
+        # Bedrock unavailable — log the real reason, then compose locally so the
+        # user still gets a clean, structured answer.
         logger.exception("Bedrock call failed: %s", e)
-        answer_lines = ["Here is the relevant information from the WARF Knowledge Base:\n"]
-        for i, s in enumerate(sources, start=1):
-            date = f"  ({s['date']})" if s.get("date") else ""
-            answer_lines.append(f"— Source [{i}]{date} —")
-            answer_lines.append(s.get("snippet", "").strip())
-            answer_lines.append("")
-        answer = "\n".join(answer_lines).strip()
+        answer = _compose_local(question, sources)
 
-    # Do not return _context to the frontend
     public_sources = [
-        {kk: vv for kk, vv in s.items() if kk != "_context"}
+        {kk: vv for kk, vv in s.items() if kk not in ("full",)}
         for s in sources
     ]
 
