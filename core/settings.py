@@ -30,6 +30,13 @@ ALLOWED_HOSTS = [
     "127.0.0.1",
     "localhost",
     "warfsystem-production.up.railway.app",
+    ".vercel.app",   # يغطي كل روابط Vercel (production + preview)
+]
+
+# مطلوب عشان الفورمات (تسجيل الدخول...) تشتغل عبر https على Vercel/Railway
+CSRF_TRUSTED_ORIGINS = [
+    "https://*.vercel.app",
+    "https://warfsystem-production.up.railway.app",
 ]
 # Application definition
 
