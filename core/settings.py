@@ -158,9 +158,12 @@ USE_TZ = True
 STATIC_URL = 'static/'
 STATICFILES_DIRS = [BASE_DIR / 'static']
 STATIC_ROOT = BASE_DIR / 'staticfiles'
+# Vercel لا يشغّل collectstatic تلقائياً، فنخدم الملفات الثابتة مباشرة
+# عبر whitenoise finders بدون الحاجة لـ manifest (يتجنب خطأ 500).
+WHITENOISE_USE_FINDERS = True
 STORAGES = {
     "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
-    "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
+    "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
 }
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
