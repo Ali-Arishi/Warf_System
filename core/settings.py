@@ -42,6 +42,7 @@ ALLOWED_HOSTS = [
     "warfsystem-production.up.railway.app",
     ".vercel.app",   # يغطي كل روابط Vercel
     ".railway.app",  # يغطي كل روابط Railway
+    ".onrender.com", # يغطي كل روابط Render
 ]
 
 # مطلوب عشان الفورمات (تسجيل الدخول...) تشتغل عبر https على Vercel/Railway
@@ -49,6 +50,7 @@ CSRF_TRUSTED_ORIGINS = [
     "https://*.vercel.app",
     "https://warfsystem-production.up.railway.app",
     "https://*.railway.app",
+    "https://*.onrender.com",
 ]
 # Application definition
 
