@@ -5,8 +5,11 @@ from django.views.decorators.http import require_POST
 from django.db.models import Q
 from django.utils import timezone
 import re
+import logging
 
 from records.models import KnowledgeChunk
+
+logger = logging.getLogger(__name__)
 
 # Unified Bedrock client (same one used by the meeting engine)
 from meetings.services.ai_meeting_engine.bedrock_client import chat as bedrock_chat
@@ -125,14 +128,18 @@ def ask_api(request):
             temperature=0.2,
             max_tokens=700,
         ).strip()
-    except Exception:
-        # Bedrock unreachable (missing key / model not enabled) — fall back to listing
-        answer_lines = ["I found relevant information in the WARF Knowledge Base:\n"]
+    except Exception as e:
+        # Bedrock unreachable — log the real reason, then show the actual
+        # content (PROBLEM / DECISION / TASKS ...) from each source so the
+        # answer is still readable without the LLM.
+        logger.exception("Bedrock call failed: %s", e)
+        answer_lines = ["Here is the relevant information from the WARF Knowledge Base:\n"]
         for i, s in enumerate(sources, start=1):
-            date = f" | {s['date']}" if s.get("date") else ""
-            answer_lines.append(f"{i}) {s['title']} — ({s['doc_type']}){date}")
-        answer_lines.append("\nYou can review the related sources below.")
-        answer = "\n".join(answer_lines)
+            date = f"  ({s['date']})" if s.get("date") else ""
+            answer_lines.append(f"— Source [{i}]{date} —")
+            answer_lines.append(s.get("snippet", "").strip())
+            answer_lines.append("")
+        answer = "\n".join(answer_lines).strip()
 
     # Do not return _context to the frontend
     public_sources = [
