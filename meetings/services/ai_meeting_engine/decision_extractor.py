@@ -1,8 +1,6 @@
 import json
-from openai import OpenAI
 from . import config
-
-client = OpenAI()
+from .bedrock_client import chat
 
 JSON_SCHEMA_HINT = """
 Return ONLY valid JSON (no markdown, no code fences).
@@ -21,6 +19,7 @@ Rules:
 - Keep items short and actionable.
 """
 
+
 def extract_decisions(meeting_id: str, transcript: str) -> dict:
     prompt = f"""{JSON_SCHEMA_HINT}
 
@@ -30,23 +29,16 @@ Transcript:
 {transcript}
 """
 
-    resp = client.chat.completions.create(
-        model=config.MODEL_NAME,
-        messages=[
-            {"role": "system", "content": "You extract structured decisions and action items from meeting transcripts."},
-            {"role": "user", "content": prompt},
-        ],
+    content = chat(
+        system_prompt="You extract structured decisions and action items from meeting transcripts.",
+        user_text=prompt,
         temperature=config.TEMPERATURE_DECISIONS,
         max_tokens=config.MAX_TOKENS_DECISIONS,
-    )
+    ).strip()
 
-    content = resp.choices[0].message.content.strip()
-
-    # Defensive JSON parsing
     try:
         data = json.loads(content)
     except json.JSONDecodeError:
-        # fallback: wrap raw text
         data = {
             "decisions": [],
             "action_items": [],
@@ -56,4 +48,3 @@ Transcript:
         }
 
     return {"meeting_id": meeting_id, "output": data}
-

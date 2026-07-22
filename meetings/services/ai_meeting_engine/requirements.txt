@@ -1,4 +1,2 @@
-openai>=1.0.0
-fastapi
-uvicorn
+boto3
 python-dotenv

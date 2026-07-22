@@ -2,6 +2,7 @@ Django>=5.0
 gunicorn
 Pillow
 python-dotenv
+boto3
 
 # deepface removed: pulls TensorFlow (~1.8GB), exceeds the Vercel 500MB limit.
 # scipy removed too: it only came in as a deepface dependency; cosine similarity
