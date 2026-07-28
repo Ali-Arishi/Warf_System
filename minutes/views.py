@@ -11,6 +11,62 @@ from meetings.models import Meeting
 from .models import Minutes
 from meetings.services.ai_meeting_engine.service import run_ai
 
+
+def _save_minutes_to_knowledge(meeting, summary, payload):
+    """
+    Store the generated meeting summary + decisions into the RAG knowledge
+    base so the WARF Assistant can retrieve it. Upserts one document per meeting.
+    """
+    from records.models import KnowledgeDocument, KnowledgeChunk
+
+    parts = [
+        f"MEETING MINUTES (Meeting: {meeting.title} | ID: {meeting.id})",
+        "",
+        "SUMMARY:",
+        (summary or "").strip() or "-",
+        "",
+    ]
+    payload = payload or {}
+    decisions = payload.get("decisions") or []
+    if decisions:
+        parts.append("DECISIONS:")
+        for d in decisions:
+            parts.append(f"- {d}")
+        parts.append("")
+    action_items = payload.get("action_items") or payload.get("tasks") or []
+    if action_items:
+        parts.append("ACTION ITEMS:")
+        for it in action_items:
+            if isinstance(it, dict):
+                parts.append(
+                    f"- {it.get('title','')} | assignee: {it.get('assignee')} "
+                    f"| due: {it.get('due_date')} | priority: {it.get('priority')}"
+                )
+            else:
+                parts.append(f"- {it}")
+        parts.append("")
+    content = "\n".join(parts)
+
+    doc = KnowledgeDocument.objects.filter(
+        external_meeting_id=f"minutes-{meeting.id}", doc_type="minutes"
+    ).first()
+    if doc is None:
+        doc = KnowledgeDocument.objects.create(
+            title=f"Meeting Minutes - {meeting.title}",
+            doc_type="minutes",
+            content=content,
+            external_meeting_id=f"minutes-{meeting.id}",
+            visibility="internal",
+        )
+    else:
+        doc.title = f"Meeting Minutes - {meeting.title}"
+        doc.content = content
+        doc.save(update_fields=["title", "content"])
+
+    doc.chunks.all().delete()
+    KnowledgeChunk.objects.create(document=doc, chunk_index=0, text=content)
+    return doc
+
 User = get_user_model()
 
 
@@ -159,7 +215,12 @@ def minutes_for_meeting(request, meeting_id):
             return redirect("minutes:meeting_minutes", meeting_id=meeting.id)
 
         if action == "generate_ai":
-            result = run_ai(str(meeting.id), minutes_obj.discussion_points)
+            # Use the manual minutes if provided, otherwise fall back to the
+            # uploaded meeting transcript so upload-only meetings summarize too.
+            source_text = (minutes_obj.discussion_points or "").strip()
+            if not source_text:
+                source_text = (getattr(meeting, "transcript_text", "") or "").strip()
+            result = run_ai(str(meeting.id), source_text)
 
             minutes_obj.ai_summary = result.get("summary", "")
 
@@ -182,7 +243,14 @@ def minutes_for_meeting(request, meeting_id):
                 "ai_generated_at",
                 "updated_at"
             ])
-            messages.success(request, "AI summary & decisions generated.")
+
+            # also store into the RAG knowledge base for the assistant
+            try:
+                _save_minutes_to_knowledge(meeting, minutes_obj.ai_summary, payload)
+            except Exception:
+                pass
+
+            messages.success(request, "AI summary & decisions generated (saved to knowledge base).")
             return redirect("minutes:meeting_minutes", meeting_id=meeting.id)
 
         if action == "send_to_review":
