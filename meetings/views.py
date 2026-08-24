@@ -116,6 +116,8 @@ def meeting_detail(request, pk):
     if attendee:
         face_verified = attendee.face_verified
 
+    is_host = request.user.is_superuser or meeting.organizer_id == request.user.id
+
     return render(request, "meetings/meeting_detail.html", {
         "meeting": meeting,
         "can_join_online": can_join_online,
@@ -124,6 +126,7 @@ def meeting_detail(request, pk):
         "open_message": open_message,
         "require_face": meeting.require_face_verification,
         "face_verified": face_verified,
+        "is_host": is_host,
     })
 
 

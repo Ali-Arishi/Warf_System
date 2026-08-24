@@ -98,10 +98,13 @@
               </li>
             </ul>
 
-            {% if is_open_now %}
+            {% if is_open_now or is_host %}
               <a class="btn btn-primary w-100" href="{% url 'meetings:join' meeting.id %}">
                 Join Online Meeting
               </a>
+              {% if not is_open_now and is_host %}
+                <div class="text-muted small mt-2">Meeting is outside its scheduled window, but you can open it as host.</div>
+              {% endif %}
             {% else %}
               <button class="btn btn-primary w-100" disabled>Join Online Meeting</button>
               <div class="text-muted small mt-2">{{ open_message }}</div>
