@@ -206,7 +206,7 @@ def minutes_for_meeting(request, meeting_id):
             return redirect("minutes:meeting_minutes", meeting_id=meeting.id)
 
         # ✅ Only capture manual text for actions that actually edit it
-        if action in ("save", "generate_ai"):
+        if action in ("save", "generate_ai", "finalize"):
             minutes_obj.discussion_points = request.POST.get("discussion_points", "")
 
         if action == "save":
@@ -251,6 +251,37 @@ def minutes_for_meeting(request, meeting_id):
                 pass
 
             messages.success(request, "AI summary & decisions generated (saved to knowledge base).")
+            return redirect("minutes:meeting_minutes", meeting_id=meeting.id)
+
+        if action == "finalize":
+            # One-click: summarize -> save to RAG -> send for approval.
+            source_text = (minutes_obj.discussion_points or "").strip()
+            if not source_text:
+                source_text = (getattr(meeting, "transcript_text", "") or "").strip()
+            if not source_text:
+                messages.error(request, "Add minutes text (or upload a transcript) before finalizing.")
+                return redirect("minutes:meeting_minutes", meeting_id=meeting.id)
+
+            result = run_ai(str(meeting.id), source_text)
+            minutes_obj.ai_summary = result.get("summary", "")
+            payload = _extract_decisions_payload(result)
+            if payload:
+                minutes_obj.ai_decisions = json.dumps(payload, ensure_ascii=False)
+            else:
+                minutes_obj.ai_decisions = str(result.get("decisions", ""))
+            minutes_obj.ai_generated_at = timezone.now()
+            minutes_obj.summary = minutes_obj.ai_summary
+            minutes_obj.save(update_fields=[
+                "ai_summary", "summary", "ai_decisions", "ai_generated_at", "updated_at"
+            ])
+
+            try:
+                _save_minutes_to_knowledge(meeting, minutes_obj.ai_summary, payload)
+            except Exception:
+                pass
+
+            minutes_obj.send_to_review()
+            messages.success(request, "Summarized, saved to knowledge base, and sent for approval.")
             return redirect("minutes:meeting_minutes", meeting_id=meeting.id)
 
         if action == "send_to_review":
