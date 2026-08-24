@@ -7,7 +7,7 @@ from django.utils import timezone
 from django.views.decorators.http import require_POST
 from django.db.models import Q
 from .forms import MeetingCreateForm
-from accounts.services.faceREC.face import verify_face, FACE_DB
+from accounts.services.faceREC.face import verify_face, FACE_DB, face_recognition_available
 from .models import Meeting, Attendee
 from django.contrib import messages
 
@@ -149,15 +149,18 @@ def join_meeting(request, pk):
             "reason": "This meeting is not configured as an online meeting."
         }, status=403)
 
-    # 3) Time gate
-    if not meeting.is_open_now():
+    # 3) Time gate (host / admin can open the meeting anytime)
+    is_host = request.user.is_superuser or meeting.organizer_id == request.user.id
+    if not meeting.is_open_now() and not is_host:
         return render(request, "meetings/meeting_closed.html", {
             "meeting": meeting,
             "message": meeting.open_status_message(),
         }, status=403)
 
-    # 4) Face gate (session-based)
-    face_verified = _has_face_session(meeting.id, request)
+    # 4) Face gate (session-based). If the face service is unavailable
+    # (deepface not installed on this host) skip it so users can still join.
+    effective_require_face = meeting.require_face_verification and face_recognition_available()
+    face_verified = _has_face_session(meeting.id, request) or not effective_require_face
 
     jitsi_domain = (meeting.jitsi_domain or "").strip() or "meet.jit.si"
 
@@ -165,7 +168,7 @@ def join_meeting(request, pk):
         "meeting": meeting,
         "jitsi_domain": jitsi_domain,
         "room_name": meeting.jitsi_room,
-        "require_face": meeting.require_face_verification,
+        "require_face": effective_require_face,
         "face_verified": face_verified,
     })
 
@@ -184,6 +187,10 @@ def verify_face_api(request, pk):
 
     if not meeting.require_face_verification:
         return JsonResponse({"approved": True, "message": "Face verification not required."})
+
+    if not face_recognition_available():
+        request.session[f"face_verified_meeting_{meeting.id}"] = True
+        return JsonResponse({"approved": True, "message": "Face verification skipped (service unavailable)."})
 
     # Enforce time gate here too (extra security)
     if not meeting.is_open_now():
