@@ -6,7 +6,6 @@
 {% block hero_subtitle %}{{ meeting.title }}{% endblock %}
 
 {% block content %}
-
 <div class="container-fluid" style="max-width: 1150px;">
 
   <div class="warf-panel mb-3">
@@ -18,16 +17,17 @@
           {% if meeting.location %} • {{ meeting.location }}{% endif %}
         </div>
       </div>
-
       <div class="text-muted small">
-        Domain: <strong>{{ jitsi_domain }}</strong> • Room: <strong>{{ room_name }}</strong>
+        Room: <strong>{{ room_name }}</strong>
       </div>
     </div>
   </div>
 
-  <div class="row g-4">
-    <!-- Face Verification -->
-    <div class="col-lg-7">
+  <!-- ============ PRE-JOIN ============ -->
+  <div id="prejoin" class="row g-4">
+
+    <!-- Face Verification (only shown if required) -->
+    <div class="col-lg-7" id="faceCard">
       <div class="card shadow-sm" style="border-radius:18px;">
         <div class="card-body p-4">
           <div class="d-flex justify-content-between align-items-center mb-2">
@@ -36,56 +36,41 @@
               <span class="badge bg-light text-dark">Not required</span>
             {% endif %}
           </div>
-
-          <p class="text-muted small mb-3">
-            Camera verification is required before entering the meeting room.
-          </p>
-
+          <p class="text-muted small mb-3">Camera verification before entering the room.</p>
           <div class="ratio ratio-16x9 rounded overflow-hidden" style="background:#111;">
-            <video id="video" autoplay playsinline muted style="width:100%; height:100%; object-fit:cover;"></video>
+            <video id="video" autoplay playsinline muted style="width:100%;height:100%;object-fit:cover;"></video>
           </div>
-
           <canvas id="canvas" class="d-none"></canvas>
-
           <div class="d-flex gap-2 mt-3">
-            <button id="btnVerify" class="btn btn-primary" type="button">
-              Capture & Verify
-            </button>
-            <button id="btnRetry" class="btn btn-outline-secondary" type="button">
-              Retry
-            </button>
+            <button id="btnVerify" class="btn btn-primary" type="button">Capture &amp; Verify</button>
+            <button id="btnRetry" class="btn btn-outline-secondary" type="button">Retry</button>
           </div>
-
           <div id="status" class="mt-3 small text-muted">Starting camera…</div>
-
-          <div class="alert alert-success py-2 mt-3 d-none" id="verifiedBadge">
-            Verified successfully. You can enter now.
-          </div>
-
-          <div class="alert alert-warning py-2 mt-3 d-none" id="cameraWarning">
-            Camera permission denied or not available. Please allow camera access and retry.
-          </div>
+          <div class="alert alert-success py-2 mt-3 d-none" id="verifiedBadge">Verified. You can enter now.</div>
+          <div class="alert alert-warning py-2 mt-3 d-none" id="cameraWarning">Camera not available. Allow access and retry.</div>
         </div>
       </div>
     </div>
 
-    <!-- Meeting Room -->
-    <div class="col-lg-5">
+    <!-- Enter -->
+    <div class="col-lg-5" id="enterCard">
       <div class="card shadow-sm" style="border-radius:18px;">
         <div class="card-body p-4">
           <h5 class="mb-2">Meeting Room</h5>
+          <p class="text-muted mb-3" id="roomHint">Click below to join the meeting inside WARF.</p>
+          <button id="btnEnter" class="btn btn-success btn-lg w-100" type="button" disabled>Enter Meeting</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
-          <p class="text-muted mb-3" id="roomHint">
-            Access will be enabled after successful verification.
-          </p>
-
-          <button id="btnEnter" class="btn btn-success btn-lg w-100" type="button" disabled>
-            Enter Meeting
-          </button>
-
-          <div class="mt-3 small text-muted">
-            The meeting room opens in a new tab.
-          </div>
+  <!-- ============ EMBEDDED MEETING ============ -->
+  <div id="jitsi-wrap" class="d-none">
+    <div class="card shadow-sm" style="border-radius:18px;">
+      <div class="card-body p-2">
+        <div id="jitsi-container" style="height:650px;border-radius:14px;overflow:hidden;"></div>
+        <div class="text-muted small mt-2 px-2">
+          If the room asks to wait for a host, the first person to join becomes the host.
         </div>
       </div>
     </div>
@@ -95,9 +80,13 @@
 {{ require_face|json_script:"require-face" }}
 {{ face_verified|default:False|json_script:"face-verified" }}
 
+<script src="https://{{ jitsi_domain }}/external_api.js"></script>
 <script>
   const REQUIRE_FACE = JSON.parse(document.getElementById("require-face").textContent);
   const FACE_VERIFIED = JSON.parse(document.getElementById("face-verified").textContent);
+  const jitsiDomain = "{{ jitsi_domain }}";
+  const roomName = "{{ room_name }}";
+  const displayName = "{{ request.user.get_full_name|default:request.user.username|escapejs }}";
 
   const video = document.getElementById("video");
   const canvas = document.getElementById("canvas");
@@ -108,150 +97,84 @@
   const verifiedBadge = document.getElementById("verifiedBadge");
   const cameraWarning = document.getElementById("cameraWarning");
   const roomHint = document.getElementById("roomHint");
+  const faceCard = document.getElementById("faceCard");
 
-  const jitsiDomain = "{{ jitsi_domain }}";
-  const roomName = "{{ room_name }}";
+  let stream = null, isVerifying = false, jitsiApi = null;
+  const setStatus = m => statusEl && (statusEl.textContent = m);
 
-  let stream = null;
-  let isVerifying = false;
-
-  function setStatus(msg) {
-    statusEl.textContent = msg;
+  function enterMeeting() {
+    document.getElementById("prejoin").classList.add("d-none");
+    document.getElementById("jitsi-wrap").classList.remove("d-none");
+    stopCamera();
+    try {
+      jitsiApi = new JitsiMeetExternalAPI(jitsiDomain, {
+        roomName: roomName,
+        parentNode: document.getElementById("jitsi-container"),
+        width: "100%", height: 650,
+        userInfo: { displayName: displayName },
+        configOverwrite: { prejoinPageEnabled: false, startWithAudioMuted: true },
+      });
+    } catch (e) {
+      // fallback to a new tab if the API can't load
+      window.open(`https://${jitsiDomain}/${roomName}`, "_blank", "noopener");
+    }
   }
 
   function enableEnter() {
     btnEnter.disabled = false;
-    roomHint.textContent = "Access granted. You can enter the meeting now.";
-    btnEnter.onclick = () => {
-      window.open(`https://${jitsiDomain}/${roomName}`, "_blank", "noopener");
-    };
+    roomHint.textContent = "Access granted. Click to join.";
+    btnEnter.onclick = enterMeeting;
   }
-
   function disableEnter() {
-    btnEnter.disabled = true;
-    btnEnter.onclick = null;
-    roomHint.textContent = "Access will be enabled after successful verification.";
+    btnEnter.disabled = true; btnEnter.onclick = null;
+    roomHint.textContent = "Complete verification to enter.";
   }
 
   async function startCamera() {
+    if (!REQUIRE_FACE) return;
     cameraWarning.classList.add("d-none");
-
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      cameraWarning.classList.remove("d-none");
-      setStatus("Camera is not supported in this browser.");
-      return;
+      cameraWarning.classList.remove("d-none"); setStatus("Camera not supported."); return;
     }
-
     try {
       stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-      video.srcObject = stream;
-      setStatus("Camera is ready.");
-    } catch (err) {
-      cameraWarning.classList.remove("d-none");
-      setStatus("Camera permission denied or not available.");
-    }
+      video.srcObject = stream; setStatus("Camera is ready.");
+    } catch (e) { cameraWarning.classList.remove("d-none"); setStatus("Camera denied."); }
   }
-
-  function stopCamera() {
-    if (!stream) return;
-    stream.getTracks().forEach(t => t.stop());
-    stream = null;
-  }
+  function stopCamera() { if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; } }
 
   async function captureAndVerify() {
-    if (!REQUIRE_FACE) return;
-    if (isVerifying) return;
-
-    isVerifying = true;
-    btnVerify.disabled = true;
-    setStatus("Verifying…");
-
-    const w = video.videoWidth || 1280;
-    const h = video.videoHeight || 720;
-
-    canvas.width = w;
-    canvas.height = h;
-
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    ctx.drawImage(video, 0, 0, w, h);
-
-    const imageData = canvas.toDataURL("image/jpeg", 0.9);
-
-    const formData = new FormData();
-    formData.append("image_data", imageData);
-    formData.append("csrfmiddlewaretoken", "{{ csrf_token }}");
-
+    if (!REQUIRE_FACE || isVerifying) return;
+    isVerifying = true; btnVerify.disabled = true; setStatus("Verifying…");
+    const w = video.videoWidth || 1280, h = video.videoHeight || 720;
+    canvas.width = w; canvas.height = h;
+    canvas.getContext("2d").drawImage(video, 0, 0, w, h);
+    const fd = new FormData();
+    fd.append("image_data", canvas.toDataURL("image/jpeg", 0.9));
+    fd.append("csrfmiddlewaretoken", "{{ csrf_token }}");
     try {
-      const res = await fetch("{% url 'meetings:verify_face' meeting.id %}", {
-        method: "POST",
-        body: formData
-      });
-
+      const res = await fetch("{% url 'meetings:verify_face' meeting.id %}", { method: "POST", body: fd });
       const data = await res.json();
-
-      if (data.approved) {
-        verifiedBadge.classList.remove("d-none");
-        setStatus("Verified ✓");
-        enableEnter();
-      } else {
-        verifiedBadge.classList.add("d-none");
-        disableEnter();
-        setStatus(data.message || "Verification failed. Please retry.");
-        btnVerify.disabled = false;
-      }
-    } catch (e) {
-      verifiedBadge.classList.add("d-none");
-      disableEnter();
-      setStatus("Verification error. Please retry.");
-      btnVerify.disabled = false;
-    } finally {
-      isVerifying = false;
-    }
+      if (data.approved) { verifiedBadge.classList.remove("d-none"); setStatus("Verified ✓"); enableEnter(); }
+      else { disableEnter(); setStatus(data.message || "Verification failed."); btnVerify.disabled = false; }
+    } catch (e) { disableEnter(); setStatus("Verification error."); btnVerify.disabled = false; }
+    finally { isVerifying = false; }
   }
 
-  function resetUI() {
-    verifiedBadge.classList.add("d-none");
-    btnVerify.disabled = false;
+  if (btnVerify) btnVerify.addEventListener("click", captureAndVerify);
+  if (btnRetry) btnRetry.addEventListener("click", async () => { verifiedBadge.classList.add("d-none"); btnVerify.disabled = false; disableEnter(); stopCamera(); await startCamera(); });
 
-    if (REQUIRE_FACE) {
-      disableEnter();
-      setStatus("Ready. Capture again.");
-    } else {
-      setStatus("Face verification not required for this meeting.");
-      enableEnter();
-    }
-  }
-
-  btnVerify.addEventListener("click", captureAndVerify);
-
-  btnRetry.addEventListener("click", async () => {
-    resetUI();
-    stopCamera();
-    await startCamera();
-  });
-
-  // Initial state
   (async function init() {
+    // If face verification is not required (or unavailable), skip the camera entirely.
+    if (!REQUIRE_FACE || FACE_VERIFIED) {
+      if (faceCard) faceCard.classList.add("d-none");
+      enableEnter();
+      return;
+    }
     await startCamera();
-
-    if (!REQUIRE_FACE) {
-      setStatus("Face verification not required for this meeting.");
-      verifiedBadge.classList.add("d-none");
-      enableEnter();
-      return;
-    }
-
-    if (FACE_VERIFIED) {
-      verifiedBadge.classList.remove("d-none");
-      setStatus("Verified ✓");
-      enableEnter();
-      return;
-    }
-
     disableEnter();
   })();
 
   window.addEventListener("beforeunload", stopCamera);
 </script>
-
 {% endblock %}
