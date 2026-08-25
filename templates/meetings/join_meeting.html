@@ -235,7 +235,14 @@
         }
       }
     };
-    recog.onerror = () => { /* auto-restart below */ };
+    recog.onerror = (ev) => {
+      if (ev.error === "network" || ev.error === "service-not-allowed" || ev.error === "not-allowed") {
+        recOn = false;
+        recStatus.textContent = "Speech recognition blocked in this browser (" + ev.error + "). Use Google Chrome.";
+        btnRec.textContent = "🎙 Start Transcript";
+        btnRec.classList.add("btn-danger"); btnRec.classList.remove("btn-outline-danger");
+      }
+    };
     recog.onend = () => { if (recOn) { try { recog.start(); } catch(e){} } };
 
     try { recog.start(); } catch(e) {}
