@@ -59,6 +59,9 @@
           <h5 class="mb-2">Meeting Room</h5>
           <p class="text-muted mb-3" id="roomHint">Click below to join the meeting inside WARF.</p>
           <button id="btnEnter" class="btn btn-success btn-lg w-100" type="button" disabled>Enter Meeting</button>
+          <a href="{% url 'minutes:meeting_minutes' meeting.id %}" class="btn btn-outline-warning w-100 mt-2">
+            Go to Summary &amp; Minutes →
+          </a>
         </div>
       </div>
     </div>
@@ -69,8 +72,14 @@
     <div class="card shadow-sm" style="border-radius:18px;">
       <div class="card-body p-2">
         <div id="jitsi-container" style="height:650px;border-radius:14px;overflow:hidden;"></div>
-        <div class="text-muted small mt-2 px-2">
-          If the room asks to wait for a host, the first person to join becomes the host.
+        <div class="d-flex flex-wrap gap-2 align-items-center mt-2 px-2">
+          <a href="{% url 'minutes:meeting_minutes' meeting.id %}"
+             class="btn btn-warning">
+            Finish &amp; Summarize this meeting →
+          </a>
+          <span class="text-muted small">
+            Opens the minutes page to generate the AI summary and send it for approval.
+          </span>
         </div>
       </div>
     </div>
