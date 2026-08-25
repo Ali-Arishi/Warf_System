@@ -280,3 +280,34 @@ def upload_transcript(request, pk):
         return redirect("minutes:meeting_minutes", meeting_id=meeting.id)
 
     return render(request, "meetings/upload_transcript.html", {"meeting": meeting})
+
+# -------------------------
+# Live transcript segment (speech-to-text from the meeting page)
+# Each participant's browser transcribes their own mic and posts segments
+# here; appended in arrival order => "who said what, in order".
+# -------------------------
+@require_POST
+@login_required
+def add_transcript_segment(request, pk):
+    meeting = get_object_or_404(Meeting, pk=pk)
+
+    if not _is_allowed_user(meeting, request.user):
+        return JsonResponse({"ok": False, "error": "Forbidden"}, status=403)
+
+    text = (request.POST.get("text") or "").strip()
+    if not text or len(text) > 2000:
+        return JsonResponse({"ok": False, "error": "Empty or too long"}, status=400)
+
+    speaker = request.user.get_full_name() or request.user.username
+    stamp = timezone.localtime().strftime("%H:%M:%S")
+    line = f"[{stamp}] {speaker}: {text}"
+
+    # append in order
+    meeting.transcript_text = (meeting.transcript_text or "")
+    if meeting.transcript_text and not meeting.transcript_text.endswith("\n"):
+        meeting.transcript_text += "\n"
+    meeting.transcript_text += line + "\n"
+    meeting.transcript_uploaded_at = timezone.now()
+    meeting.save(update_fields=["transcript_text", "transcript_uploaded_at"])
+
+    return JsonResponse({"ok": True, "line": line})

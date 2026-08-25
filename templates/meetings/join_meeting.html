@@ -73,6 +73,12 @@
       <div class="card-body p-2">
         <div id="jitsi-container" style="height:650px;border-radius:14px;overflow:hidden;"></div>
         <div class="d-flex flex-wrap gap-2 align-items-center mt-2 px-2">
+          <button id="btnRec" class="btn btn-danger" type="button">🎙 Start Transcript</button>
+          <span id="recStatus" class="small text-muted">Transcript recorder is off.</span>
+        </div>
+        <div id="liveTranscript" class="small px-2 mt-1 text-muted"
+             style="max-height:110px;overflow:auto;white-space:pre-wrap;"></div>
+        <div class="d-flex flex-wrap gap-2 align-items-center mt-2 px-2">
           <a href="{% url 'minutes:meeting_minutes' meeting.id %}"
              class="btn btn-warning">
             Finish &amp; Summarize this meeting →
@@ -184,6 +190,70 @@
     disableEnter();
   })();
 
-  window.addEventListener("beforeunload", stopCamera);
+  // ---------- Live transcript recorder (Web Speech API) ----------
+  const btnRec = document.getElementById("btnRec");
+  const recStatus = document.getElementById("recStatus");
+  const liveBox = document.getElementById("liveTranscript");
+  const SEGMENT_URL = "{% url 'meetings:transcript_segment' meeting.id %}";
+  const CSRF = "{{ csrf_token }}";
+  let recog = null, recOn = false;
+
+  function speechSupported() {
+    return ("webkitSpeechRecognition" in window) || ("SpeechRecognition" in window);
+  }
+
+  async function sendSegment(text) {
+    const fd = new FormData();
+    fd.append("text", text);
+    fd.append("csrfmiddlewaretoken", CSRF);
+    try {
+      const r = await fetch(SEGMENT_URL, { method: "POST", body: fd });
+      const d = await r.json();
+      if (d.ok && liveBox) {
+        liveBox.textContent += d.line + "\n";
+        liveBox.scrollTop = liveBox.scrollHeight;
+      }
+    } catch (e) { /* keep recording even if one segment fails */ }
+  }
+
+  function startRec() {
+    if (!speechSupported()) {
+      recStatus.textContent = "Speech recognition is not supported in this browser (use Chrome).";
+      return;
+    }
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    recog = new SR();
+    recog.lang = navigator.language && navigator.language.startsWith("ar") ? "ar-SA" : (navigator.language || "en-US");
+    recog.continuous = true;
+    recog.interimResults = false;
+
+    recog.onresult = (ev) => {
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        if (ev.results[i].isFinal) {
+          const txt = ev.results[i][0].transcript.trim();
+          if (txt) sendSegment(txt);
+        }
+      }
+    };
+    recog.onerror = () => { /* auto-restart below */ };
+    recog.onend = () => { if (recOn) { try { recog.start(); } catch(e){} } };
+
+    try { recog.start(); } catch(e) {}
+    recOn = true;
+    btnRec.textContent = "⏹ Stop Transcript";
+    btnRec.classList.remove("btn-danger"); btnRec.classList.add("btn-outline-danger");
+    recStatus.textContent = "Recording… your speech is transcribed and saved with your name.";
+  }
+
+  function stopRec() {
+    recOn = false;
+    if (recog) { try { recog.stop(); } catch(e){} recog = null; }
+    btnRec.textContent = "🎙 Start Transcript";
+    btnRec.classList.add("btn-danger"); btnRec.classList.remove("btn-outline-danger");
+    recStatus.textContent = "Transcript recorder is off.";
+  }
+
+  if (btnRec) btnRec.addEventListener("click", () => recOn ? stopRec() : startRec());
+  window.addEventListener("beforeunload", () => { stopRec(); stopCamera(); });
 </script>
 {% endblock %}

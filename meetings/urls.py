@@ -13,4 +13,7 @@ urlpatterns = [
 
     # Upload transcript (text) for upload-only / both
     path("<int:pk>/upload/", views.upload_transcript, name="upload_transcript"),
+
+    # Live transcription segments from the in-meeting recorder
+    path("<int:pk>/transcript-segment/", views.add_transcript_segment, name="transcript_segment"),
 ]
