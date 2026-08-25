@@ -121,6 +121,8 @@
     document.getElementById("prejoin").classList.add("d-none");
     document.getElementById("jitsi-wrap").classList.remove("d-none");
     stopCamera();
+    // auto-start the transcript recorder so speech is always captured
+    setTimeout(() => { if (!recOn) try { startRec(); } catch(e){} }, 1500);
     try {
       jitsiApi = new JitsiMeetExternalAPI(jitsiDomain, {
         roomName: roomName,
