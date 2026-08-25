@@ -44,10 +44,23 @@ def chat(system_prompt: str, user_text: str,
             "(id الموديل من صفحة Model access في Bedrock)."
         )
 
-    resp = _get_client().converse(
-        modelId=model_id,
-        system=[{"text": system_prompt}],
-        messages=[{"role": "user", "content": [{"text": user_text}]}],
-        inferenceConfig={"maxTokens": max_tokens, "temperature": temperature},
-    )
-    return resp["output"]["message"]["content"][0]["text"]
+    # Candidates: the configured ID, then an optional ARN fallback
+    # (global./us. inference profiles sometimes require the full ARN).
+    candidates = [model_id]
+    arn = os.getenv("BEDROCK_MODEL_ARN", "").strip()
+    if arn and arn not in candidates:
+        candidates.append(arn)
+
+    last_err = None
+    for mid in candidates:
+        try:
+            resp = _get_client().converse(
+                modelId=mid,
+                system=[{"text": system_prompt}],
+                messages=[{"role": "user", "content": [{"text": user_text}]}],
+                inferenceConfig={"maxTokens": max_tokens, "temperature": temperature},
+            )
+            return resp["output"]["message"]["content"][0]["text"]
+        except Exception as e:
+            last_err = e
+    raise last_err

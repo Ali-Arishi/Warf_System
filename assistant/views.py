@@ -257,3 +257,26 @@ def ask_api(request):
         "answer": answer,
         "sources": public_sources,
     })
+
+
+@login_required
+def bedrock_check(request):
+    """Admin-only diagnostic: calls Bedrock once and shows the result/error."""
+    import os, traceback
+    from django.http import JsonResponse as JR
+    if not request.user.is_superuser:
+        return JR({"ok": False, "error": "Admin only"}, status=403)
+
+    info = {
+        "AWS_REGION": os.getenv("AWS_REGION", "(not set)"),
+        "BEDROCK_MODEL_ID": os.getenv("BEDROCK_MODEL_ID", "(not set)"),
+        "BEDROCK_MODEL_ARN": os.getenv("BEDROCK_MODEL_ARN", "(not set)"),
+        "AWS_ACCESS_KEY_ID_set": bool(os.getenv("AWS_ACCESS_KEY_ID")),
+        "AWS_SECRET_ACCESS_KEY_set": bool(os.getenv("AWS_SECRET_ACCESS_KEY")),
+    }
+    try:
+        reply = bedrock_chat("You are a test.", "Reply with the single word: OK",
+                             temperature=0, max_tokens=10)
+        return JR({"ok": True, "reply": reply, "env": info})
+    except Exception:
+        return JR({"ok": False, "error": traceback.format_exc()[-2000:], "env": info})
